@@ -13,6 +13,11 @@ import pdfplumber
 import pandas as pd
 from pathlib import Path
 
+try:
+    from src.pdf_utils import iter_pdf_pages, load_pages
+except ImportError:
+    from pdf_utils import iter_pdf_pages, load_pages
+
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 PDF_DIR = DATA_DIR / "acfr_pdfs"
@@ -124,8 +129,8 @@ def clean_text(text: str) -> str:
 
 def find_budgetary_comparison_page(pdf) -> int | None:
     """Find the RSI Budgetary Comparison Schedule page for the General Fund."""
-    for i in range(len(pdf.pages)):
-        text = clean_text((pdf.pages[i].extract_text() or "")).upper()
+    for i, page in iter_pdf_pages(pdf):
+        text = clean_text((page.extract_text() or "")).upper()
         # Some PDFs have spaces within words like "B UDGETARY"
         text_nospace = text.replace(" ", "")
         if "BUDGETARYCOMPARISON" in text_nospace and "GENERALFUND" in text_nospace:
@@ -152,7 +157,10 @@ def collapse_spaced_numbers(line: str) -> str:
 
 def parse_budgetary_comparison(pdf, page_idx: int, fy: int) -> list[dict]:
     """Parse the RSI Budgetary Comparison Schedule from a single page."""
-    raw = pdf.pages[page_idx].extract_text(layout=True) or ""
+    pages = load_pages(pdf, [page_idx])
+    if not pages:
+        return []
+    raw = pages[0].extract_text(layout=True) or ""
     # Clean cid characters from some PDFs
     raw = re.sub(r"\(cid:\d+\)", "", raw)
 

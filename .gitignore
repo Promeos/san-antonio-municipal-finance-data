@@ -1,6 +1,7 @@
 # Python
 venv/
 __pycache__/
+.pytest_cache/
 *.pyc
 *.pyo
 *.egg-info/
@@ -24,6 +25,15 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+.claude/
+.claude/settings.json
+.claude/settings.local.json
 
 # Environment
 .env
+
+# Local AI / planning docs
+CLAUDE.md
+PLANS.md
+PLAN_repo_split.md
+plans/

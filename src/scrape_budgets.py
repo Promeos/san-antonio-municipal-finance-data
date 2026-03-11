@@ -13,6 +13,11 @@ import pdfplumber
 import pandas as pd
 from pathlib import Path
 
+try:
+    from src.pdf_utils import iter_page_texts, load_pages
+except ImportError:
+    from pdf_utils import iter_page_texts, load_pages
+
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 PDF_DIR = DATA_DIR / "pdfs"
@@ -64,8 +69,8 @@ def normalize_fund_label(raw_label: str) -> str | None:
 def find_combined_summary_pages(pdf) -> list[int]:
     """Find pages containing the Combined Budget Summary table."""
     results = []
-    for i in range(len(pdf.pages)):
-        text = (pdf.pages[i].extract_text() or "").upper()
+    for i, text in iter_page_texts(pdf):
+        text = text.upper()
         if "COMBINED BUDGET SUMMARY" in text and "ALL FUND" in text:
             results.append(i)
     return results
@@ -74,8 +79,7 @@ def find_combined_summary_pages(pdf) -> list[int]:
 def find_all_funds_revenue_pages(pdf) -> list[int]:
     """Find pages with the All Funds Revenue Summary table (older format)."""
     results = []
-    for i in range(len(pdf.pages)):
-        text = (pdf.pages[i].extract_text() or "")
+    for i, text in iter_page_texts(pdf):
         upper = text.upper()
         # This specific table header appears in older budgets
         if "ALL FUNDS" in upper and "SUMMARY OF ADOPTED BUDGET REVENUES" in upper:
@@ -93,8 +97,7 @@ def find_general_fund_summary_pages(pdf) -> list[int]:
     We specifically look for 'DEPARTMENTAL APPROPRIATIONS' to confirm.
     """
     results = []
-    for i in range(len(pdf.pages)):
-        text = (pdf.pages[i].extract_text() or "")
+    for i, text in iter_page_texts(pdf):
         upper = text.upper()
         lines = text.strip().split("\n")
 
@@ -123,8 +126,8 @@ def parse_combined_summary(pdf, pages: list[int], fy: int) -> pd.DataFrame:
     rows = []
     section = "info"
 
-    for page_idx in pages:
-        text = pdf.pages[page_idx].extract_text() or ""
+    for page in load_pages(pdf, pages):
+        text = page.extract_text() or ""
         lines = text.strip().split("\n")
 
         # Determine if this is the "right side" page (labels on right)
@@ -212,8 +215,8 @@ def parse_all_funds_revenue(pdf, pages: list[int], fy: int) -> pd.DataFrame:
     current_fund = "General Fund"
     current_fund_raw = "General Fund"
 
-    for page_idx in pages:
-        text = pdf.pages[page_idx].extract_text() or ""
+    for page in load_pages(pdf, pages):
+        text = page.extract_text() or ""
         lines = text.strip().split("\n")
 
         for line in lines:
@@ -314,8 +317,8 @@ def parse_general_fund_depts(pdf, pages: list[int], fy: int) -> pd.DataFrame:
         "information technology", "self-insurance", "storm water",
     ]
 
-    for page_idx in pages:
-        text = pdf.pages[page_idx].extract_text() or ""
+    for page in load_pages(pdf, pages):
+        text = page.extract_text() or ""
         lines = text.strip().split("\n")
 
         # Check if this page has the ADOPTED column header

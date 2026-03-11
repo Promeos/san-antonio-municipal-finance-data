@@ -7,7 +7,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.scrape_cip import (
     find_cip_category_pages,
+    find_cip_revenue_pages,
     parse_cip_categories,
+    parse_cip_revenue_sources,
     find_bond_status_pages,
     parse_bond_status,
 )
@@ -103,3 +105,43 @@ class TestBondYearAssignment:
             programs = df["bond_program"].unique()
             # This is a soft check — just verify bond_program column exists and has values
             assert len(programs) >= 1, f"FY{fy} has no bond programs"
+
+
+class TestCIPRevenueSources:
+    """parse_cip_revenue_sources should extract funding rows, not category labels."""
+
+    CATEGORY_LABELS = [
+        "Drainage",
+        "Parks",
+        "Libraries",
+        "Municipal Facilities",
+    ]
+
+    def _run_parser(self, budget_pdf, fy):
+        pdf = budget_pdf(fy)
+        pages = find_cip_revenue_pages(pdf)
+        if not pages:
+            return None
+        return parse_cip_revenue_sources(pdf, pages, fy)
+
+    def test_fy2015_has_named_sources(self, budget_pdf):
+        df = self._run_parser(budget_pdf, 2015)
+        assert df is not None and not df.empty, "FY2015 CIP revenue sources missing"
+        labels = df["source"].str.lower().tolist()
+        assert any("bond" in label for label in labels), "FY2015 missing bond source rows"
+        assert any("aviation" in label or "airport" in label for label in labels), (
+            "FY2015 missing aviation funding row"
+        )
+
+    def test_latest_year_includes_total(self, budget_pdf):
+        df = self._run_parser(budget_pdf, 2026)
+        assert df is not None and not df.empty, "FY2026 CIP revenue sources missing"
+        assert df["source"].str.upper().eq("TOTAL").any(), "FY2026 missing Total source row"
+
+    def test_revenue_sources_do_not_bleed_categories(self, budget_pdf):
+        df = self._run_parser(budget_pdf, 2024)
+        if df is None or df.empty:
+            return
+        labels = df["source"].str.lower().tolist()
+        for bad in self.CATEGORY_LABELS:
+            assert bad.lower() not in labels, f"Found category label in revenue sources: {bad}"

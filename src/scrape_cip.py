@@ -14,6 +14,11 @@ import pdfplumber
 import pandas as pd
 from pathlib import Path
 
+try:
+    from src.pdf_utils import iter_page_texts, load_pages
+except ImportError:
+    from pdf_utils import iter_page_texts, load_pages
+
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 PDF_DIR = DATA_DIR / "pdfs"
@@ -45,8 +50,7 @@ def find_cip_category_pages(pdf) -> list[int]:
     - CIP section detailed table (e.g. "Capital Improvements Program Costs by Program Category")
     """
     results = []
-    for i, page in enumerate(pdf.pages):
-        text = page.extract_text() or ""
+    for i, text in iter_page_texts(pdf):
         lower = text.lower()
         # Must mention capital improvement/program and category, plus have a total line
         if ("capital" in lower
@@ -56,6 +60,7 @@ def find_cip_category_pages(pdf) -> list[int]:
             # Exclude revenue-source pages (they often appear adjacent to category pages)
             if "revenue source" in lower:
                 continue
+            page = load_pages(pdf, [i])[0]
             tables = page.extract_tables()
             if tables:
                 # Check all tables on the page together for category-like content
@@ -76,12 +81,12 @@ def find_cip_category_pages(pdf) -> list[int]:
 def find_cip_revenue_pages(pdf) -> list[int]:
     """Find pages with CIP by Revenue Source table."""
     results = []
-    for i, page in enumerate(pdf.pages):
-        text = page.extract_text() or ""
+    for i, text in iter_page_texts(pdf):
         lower = text.lower()
         if ("revenue source" in lower
                 and ("capital" in lower or "cip" in lower)
                 and "total" in lower):
+            page = load_pages(pdf, [i])[0]
             tables = page.extract_tables()
             if tables:
                 for t in tables:
@@ -95,12 +100,12 @@ def find_cip_revenue_pages(pdf) -> list[int]:
 def find_bond_status_pages(pdf) -> list[int]:
     """Find pages with bond program authorization/issuance status tables."""
     results = []
-    for i, page in enumerate(pdf.pages):
-        text = page.extract_text() or ""
+    for i, text in iter_page_texts(pdf):
         lower = text.lower()
         if ("bond program" in lower
                 and ("authorized" in lower or "unissued" in lower)
                 and "total" in lower):
+            page = load_pages(pdf, [i])[0]
             tables = page.extract_tables()
             if tables:
                 results.append(i)
@@ -137,8 +142,7 @@ def parse_cip_categories(pdf, pages: list[int], fy: int) -> pd.DataFrame:
     # Collect candidates from all pages, then pick the best set
     page_results = []
 
-    for page_idx in pages:
-        page = pdf.pages[page_idx]
+    for page in load_pages(pdf, pages):
         tables = page.extract_tables()
         page_rows = []
 
@@ -240,8 +244,7 @@ def parse_cip_revenue_sources(pdf, pages: list[int], fy: int) -> pd.DataFrame:
 
     page_results = []
 
-    for page_idx in pages:
-        page = pdf.pages[page_idx]
+    for page in load_pages(pdf, pages):
         tables = page.extract_tables()
         page_rows = []
 
@@ -330,8 +333,7 @@ def parse_bond_status(pdf, pages: list[int], fy: int) -> pd.DataFrame:
     rows = []
     bond_years = [2022, 2017, 2012, 2007, 2003]
 
-    for page_idx in pages:
-        page = pdf.pages[page_idx]
+    for page in load_pages(pdf, pages):
         text = page.extract_text() or ""
 
         # Page-level fallback: determine the most prominent bond program on this page
