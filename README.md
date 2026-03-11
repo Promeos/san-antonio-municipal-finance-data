@@ -1,3 +1,5 @@
+![San Antonio Municipal Finance Data Banner](sa_finance_banner.png)
+
 # San Antonio Municipal Finance Data
 
 This repository is an unofficial, reproducible data product for City of San Antonio municipal finance documents. It downloads official budget and ACFR PDFs, extracts structured tables from those PDFs, validates the resulting CSVs, and keeps the processed datasets under version control.
