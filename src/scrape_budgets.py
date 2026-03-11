@@ -19,6 +19,23 @@ PDF_DIR = DATA_DIR / "pdfs"
 OUTPUT_DIR = DATA_DIR / "processed"
 
 
+FUND_LABEL_ALIASES = {
+    "GENERAL FUND": "General Fund",
+    "SPECIAL REVENUE FUND": "Special Revenue Funds",
+    "SPECIAL REVENUE FUNDS": "Special Revenue Funds",
+    "ENTERPRISE FUND": "Enterprise Funds",
+    "ENTERPRISE FUNDS": "Enterprise Funds",
+    "TRUST FUND": "Trust Funds",
+    "TRUST FUNDS": "Trust Funds",
+    "INTERNAL SERVICE FUND": "Internal Service Funds",
+    "INTERNAL SERVICE FUNDS": "Internal Service Funds",
+    "OTHER FUND": "Other Funds",
+    "OTHER FUNDS": "Other Funds",
+}
+
+CANONICAL_FUND_LABELS = frozenset(FUND_LABEL_ALIASES.values())
+
+
 def extract_dollar_amount(s: str) -> float | None:
     """Parse a dollar amount string like '1,695,896,847' or '(2,361,151)' into a float."""
     if not s or s.strip() in ("", "-", "N/A"):
@@ -34,6 +51,14 @@ def extract_dollar_amount(s: str) -> float | None:
         return -val if negative else val
     except ValueError:
         return None
+
+
+def normalize_fund_label(raw_label: str) -> str | None:
+    """Normalize a raw fund heading to the canonical label used by the project."""
+    cleaned = re.sub(r"\s+", " ", raw_label or "").strip().rstrip(":")
+    if not cleaned:
+        return None
+    return FUND_LABEL_ALIASES.get(cleaned.upper())
 
 
 def find_combined_summary_pages(pdf) -> list[int]:
@@ -185,6 +210,7 @@ def parse_all_funds_revenue(pdf, pages: list[int], fy: int) -> pd.DataFrame:
     """
     rows = []
     current_fund = "General Fund"
+    current_fund_raw = "General Fund"
 
     for page_idx in pages:
         text = pdf.pages[page_idx].extract_text() or ""
@@ -192,6 +218,7 @@ def parse_all_funds_revenue(pdf, pages: list[int], fy: int) -> pd.DataFrame:
 
         for line in lines:
             upper = line.upper().strip()
+            has_amounts = bool(re.search(r'[\d,]{4,}', line))
 
             # Skip headers
             if any(skip in upper for skip in [
@@ -202,21 +229,12 @@ def parse_all_funds_revenue(pdf, pages: list[int], fy: int) -> pd.DataFrame:
                 continue
 
             # Track current fund
-            if "General Fund" in line and not re.search(r'[\d,]{4,}', line):
-                current_fund = "General Fund"
-                continue
-            elif "Special Revenue" in line and not re.search(r'[\d,]{4,}', line):
-                current_fund = "Special Revenue Funds"
-                continue
-            elif "Enterprise Fund" in line and not re.search(r'[\d,]{4,}', line):
-                current_fund = "Enterprise Funds"
-                continue
-            elif "Trust Fund" in line and not re.search(r'[\d,]{4,}', line):
-                current_fund = "Trust Funds"
-                continue
-            elif "Internal Service" in line and not re.search(r'[\d,]{4,}', line):
-                current_fund = "Internal Service Funds"
-                continue
+            if not has_amounts:
+                normalized_fund = normalize_fund_label(upper)
+                if normalized_fund is not None:
+                    current_fund_raw = re.sub(r"\s+", " ", line).strip().rstrip(":")
+                    current_fund = normalized_fund
+                    continue
 
             # Extract data
             nums = re.findall(r'\(?\$?\s*[\d,]{4,}\)?', line)
@@ -235,23 +253,38 @@ def parse_all_funds_revenue(pdf, pages: list[int], fy: int) -> pd.DataFrame:
             if not amounts:
                 continue
 
-            # Last column is the Adopted amount
-            adopted = amounts[-1]
+            # Use the Adopted column (last in a 6-column layout).
+            # If we have exactly 6 amounts, use index 5 (Adopted).
+            # Otherwise fall back to last amount.
+            if len(amounts) == 6:
+                adopted = amounts[5]
+            else:
+                adopted = amounts[-1]
 
-            # Check for fund totals
-            if label.upper().startswith("TOTAL"):
-                fund_name = label.replace("TOTAL", "").replace("Total", "").strip()
-                if fund_name:
-                    current_fund = fund_name
+            is_total = label.upper().startswith("TOTAL")
+
+            # Reject non-total items with impossibly large values
+            if not is_total and abs(adopted) > 500_000_000:
+                continue
 
             rows.append({
                 "fund": current_fund,
+                "fund_raw": current_fund_raw,
                 "line_item": label,
                 "adopted_amount": adopted,
                 "fiscal_year": fy,
+                "is_total_row": is_total,
             })
 
     return pd.DataFrame(rows)
+
+
+DEPT_STOP_WORDS = [
+    "available funds", "taxable value", "exemption", "property tax revenue",
+    "tax rate", "assessed value", "homestead", "disability",
+    "surviving spouse", "net taxable", "gross ending", "cummulative",
+    "cumulative", "incremental", "current property tax",
+]
 
 
 def parse_general_fund_depts(pdf, pages: list[int], fy: int) -> pd.DataFrame:
@@ -279,7 +312,6 @@ def parse_general_fund_depts(pdf, pages: list[int], fy: int) -> pd.DataFrame:
         "center city", "compliance", "government affairs", "management & budget",
         "municipal election", "pre-k", "ready to work", "resiliency",
         "information technology", "self-insurance", "storm water",
-        "total appropriations", "total available", "gross ending",
     ]
 
     for page_idx in pages:
@@ -329,6 +361,13 @@ def parse_general_fund_depts(pdf, pages: list[int], fy: int) -> pd.DataFrame:
             if not label or len(label) < 3:
                 continue
 
+            # Filter out non-department rows (tax-base, fund-balance, etc.)
+            label_lower = label.lower()
+            if any(stop in label_lower for stop in DEPT_STOP_WORDS):
+                continue
+            if re.fullmatch(r'[\d\s\$\(\),.\-]+', label):
+                continue
+
             # Parse amounts - the last one is typically the Adopted figure
             amounts = [extract_dollar_amount(n) for n in nums]
             amounts = [a for a in amounts if a is not None]
@@ -337,6 +376,10 @@ def parse_general_fund_depts(pdf, pages: list[int], fy: int) -> pd.DataFrame:
                 continue
 
             adopted = amounts[-1]
+
+            # Reject values > $1B — these are tax roll values, not dept budgets
+            if abs(adopted) > 1_000_000_000:
+                continue
 
             # Deduplicate: same department may appear on both pages of the spread
             dept_key = label.lower().strip()

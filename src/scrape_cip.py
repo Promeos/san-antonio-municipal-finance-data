@@ -53,14 +53,23 @@ def find_cip_category_pages(pdf) -> list[int]:
                 and ("improvement" in lower or "program" in lower)
                 and "category" in lower
                 and "total" in lower):
+            # Exclude revenue-source pages (they often appear adjacent to category pages)
+            if "revenue source" in lower:
+                continue
             tables = page.extract_tables()
             if tables:
-                # Verify at least one table has program-like rows
-                for t in tables:
-                    flat = " ".join(str(c) for row in t for c in row if c).lower()
-                    if "streets" in flat or "parks" in flat or "drainage" in flat:
-                        results.append(i)
-                        break
+                # Check all tables on the page together for category-like content
+                all_flat = " ".join(
+                    str(c) for t in tables for row in t for c in row if c
+                ).lower()
+                category_keywords = [
+                    "streets", "parks", "drainage", "facilities",
+                    "public safety", "library", "libraries",
+                    "sidewalk", "transportation", "information technology",
+                    "program category",
+                ]
+                if any(kw in all_flat for kw in category_keywords):
+                    results.append(i)
     return results
 
 
@@ -106,6 +115,12 @@ def clean_label(s: str) -> str:
     s = re.sub(r'\s+', ' ', s)
     s = re.sub(r'^[\$\s]+', '', s)
     return s.strip()
+
+
+CIP_REVENUE_KEYWORDS = [
+    "bond", "certificate", "obligation", "tax note", "tax notes",
+    "self-supporting", "previous debt", "grant", "aviation",
+]
 
 
 def parse_cip_categories(pdf, pages: list[int], fy: int) -> pd.DataFrame:
@@ -162,6 +177,10 @@ def parse_cip_categories(pdf, pages: list[int], fy: int) -> pd.DataFrame:
                     'program category', 'amount', 'number', 'page',
                     'figure', 'in thousands', 'includes',
                 ]):
+                    continue
+
+                # Reject revenue-source rows that leaked into category pages
+                if any(kw in label_lower for kw in CIP_REVENUE_KEYWORDS):
                     continue
 
                 is_total = label_lower.startswith('total')
@@ -309,16 +328,17 @@ def parse_bond_status(pdf, pages: list[int], fy: int) -> pd.DataFrame:
     Values are in millions.
     """
     rows = []
+    bond_years = [2022, 2017, 2012, 2007, 2003]
 
     for page_idx in pages:
         page = pdf.pages[page_idx]
         text = page.extract_text() or ""
 
-        # Determine which bond program this is (2022, 2017, 2012, 2007)
-        bond_year = None
-        for year in [2022, 2017, 2012, 2007, 2003]:
+        # Page-level fallback: determine the most prominent bond program on this page
+        page_bond_year = None
+        for year in bond_years:
             if str(year) in text and "bond program" in text.lower():
-                bond_year = year
+                page_bond_year = year
                 break
 
         tables = page.extract_tables()
@@ -331,10 +351,22 @@ def parse_bond_status(pdf, pages: list[int], fy: int) -> pd.DataFrame:
             if "authorized" not in flat and "unissued" not in flat:
                 continue
 
+            # Track bond year within each table via sub-headers
+            current_bond_year = page_bond_year
+
             for row in table:
                 cells = [c for c in row if c is not None]
                 if not cells:
                     continue
+
+                row_text = " ".join(str(c) for c in cells)
+
+                # Detect bond-program sub-headers within the table
+                # e.g., "2017 Bond Program" or "2017 G.O. Bonds"
+                for year in bond_years:
+                    if str(year) in row_text and ("bond" in row_text.lower() or "program" in row_text.lower()):
+                        current_bond_year = year
+                        break
 
                 label = None
                 amounts = []
@@ -356,6 +388,13 @@ def parse_bond_status(pdf, pages: list[int], fy: int) -> pd.DataFrame:
                 ]):
                     continue
 
+                # Try to extract bond year from the row's label text
+                row_bond_year = current_bond_year
+                for year in bond_years:
+                    if str(year) in label:
+                        row_bond_year = year
+                        break
+
                 is_total = label_lower.startswith('total')
                 if is_total:
                     label = "Total"
@@ -366,7 +405,7 @@ def parse_bond_status(pdf, pages: list[int], fy: int) -> pd.DataFrame:
                 unissued = amounts[2] * 1_000_000 if len(amounts) >= 3 else None
 
                 rows.append({
-                    "bond_program": f"{bond_year} G.O. Bonds" if bond_year else "Unknown",
+                    "bond_program": f"{row_bond_year} G.O. Bonds" if row_bond_year else "Unknown",
                     "proposition": label,
                     "authorized": authorized,
                     "issued": issued,

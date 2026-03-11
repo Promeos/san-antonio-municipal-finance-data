@@ -28,5 +28,5 @@ SA fiscal year runs Oct 1 – Sep 30.
 ## Data Quality Notes
 - FY 2000–2007 PDFs have a different format and are not yet parsed
 - `general_fund_departments.csv` has reconciliation issues — not reliable for headlines
-- `all_funds_revenue.csv` needs normalization before use — fund labels are inconsistent
+- `all_funds_revenue.csv` now has canonical fund labels plus `fund_raw`; use it cautiously because row completeness still needs reconciliation
 - ACFR coverage has a gap: FY 2011–2014 tables were not text-extractable

@@ -159,55 +159,74 @@ def parse_budgetary_comparison(pdf, page_idx: int, fy: int) -> list[dict]:
     lines = raw.split("\n")
     rows = []
     section = None  # "revenue" or "expenditure"
+    pending_label = None  # Buffer for labels on a separate line from their numbers
 
     for line in lines:
         line = collapse_spaced_numbers(line)
         upper = line.upper().strip()
+        upper_nospace = upper.replace(" ", "")
 
-        # Section detection
-        if "RESOURCES (INFLOWS)" in upper or "RESOURCES(INFLOWS)" in upper:
+        # Section detection (handle PDFs with no spaces between words)
+        if "RESOURCES (INFLOWS)" in upper or "RESOURCES(INFLOWS)" in upper_nospace:
             section = "revenue"
+            pending_label = None
             continue
-        if "CHARGES TO APPROPRIATIONS" in upper and "OUTFLOWS" in upper:
+        if ("CHARGES TO APPROPRIATIONS" in upper or "CHARGESTOAPPROPRIATIONS" in upper_nospace) and (
+            "OUTFLOWS" in upper or "OUTFLOWS" in upper_nospace
+        ):
             section = "expenditure"
+            pending_label = None
             # Don't continue — this line might also be "Total Charges to Appropriations"
-            if "TOTAL" not in upper:
+            if "TOTAL" not in upper and "TOTAL" not in upper_nospace:
                 continue
 
         if section is None:
             continue
 
         # Stop at the GAAP reconciliation section
-        if "EXPLANATION OF DIFFERENCES" in upper:
+        if "EXPLANATION OF DIFFERENCES" in upper or "EXPLANATIONOFDIFFERENCES" in upper_nospace:
             break
-        if "SURPLUS" in upper and "DEFICIENCY" in upper:
+        if ("SURPLUS" in upper or "SURPLUS" in upper_nospace) and (
+            "DEFICIENCY" in upper or "DEFICIENCY" in upper_nospace
+        ):
             break
-        if "FUND BALANCE ALLOCATION" in upper or "FUNDBALANCEALLOCATION" in upper:
+        if "FUND BALANCE ALLOCATION" in upper or "FUNDBALANCEALLOCATION" in upper_nospace:
             break
-        if "EXCESS" in upper and "DEFICIENCY" in upper:
+        if ("EXCESS" in upper or "EXCESS" in upper_nospace) and (
+            "DEFICIENCY" in upper or "DEFICIENCY" in upper_nospace
+        ):
             break
 
         # Extract dollar amounts (including negative in parens)
         nums = re.findall(r"\(?\$?\s*[\d,]{1,}\)?", line)
         # Filter to actual numbers (at least 1 digit)
         nums = [n for n in nums if re.search(r"\d", n)]
-        if not nums:
-            continue
 
-        # Get the label: everything before the first number
+        # Try to extract a label from this line
         first_num_match = re.search(r"\(?\$?\s*[\d,]{2,}", line)
-        if not first_num_match:
-            continue
-        label_raw = line[:first_num_match.start()].strip()
+        if first_num_match:
+            label_raw = line[:first_num_match.start()].strip()
+        else:
+            label_raw = line.strip()
 
-        # Normalize label
         label = normalize_label(label_raw, section)
-        if label is None:
-            # Try with the "Total" prefix for expenditure totals
-            if section == "expenditure" and "TOTAL" in upper:
-                label = "Total Charges to Appropriations"
-            else:
-                continue
+        if label is None and section == "expenditure" and "TOTAL" in upper:
+            label = "Total Charges to Appropriations"
+
+        # Line has a label but no numbers — buffer it for the next line
+        if label and not nums:
+            pending_label = label
+            continue
+
+        # Line has numbers but no label — use the buffered label
+        if nums and label is None and pending_label:
+            label = pending_label
+            pending_label = None
+        elif label:
+            pending_label = None
+
+        if not nums or label is None:
+            continue
 
         # Parse all 4 amounts: Original, Final, Actual, Variance
         amounts = [extract_dollar_amount(n) for n in nums]
